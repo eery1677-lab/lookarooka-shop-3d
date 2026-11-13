@@ -29,7 +29,7 @@
   <button id="ceil">천장 숨기기</button>
   <button id="ar">AR로 보기</button>
 </div>
-<!-- AR(11-13 5단계): 구글 model-viewer가 휴대폰에 맞는 AR을 엶 — 아이폰은 Quick Look(shop.usdz), 안드로이드는 Scene Viewer·WebXR(shop.glb).
+<!-- AR(11-13 5단계): 구글 model-viewer가 휴대폰에 맞는 AR을 엶 — 아이폰은 Quick Look(shop_ar.usdz), 안드로이드는 Scene Viewer·WebXR(shop_ar.glb) — 둘 다 천장 없는 모형.
      화면에는 안 보이게 두고(모형을 두 번 받지 않게 loading=lazy) 단추로만 엶. 모형 크기는 휴대폰에서 손가락으로 줄이고 키울 수 있음(ar-scale auto) -->
 <model-viewer id="arv" style="display:none" loading="lazy" ar ar-modes="quick-look scene-viewer webxr" ar-scale="auto"
   alt="루카루카 안경원 3D 매장"></model-viewer>
@@ -116,7 +116,7 @@ const high = [];   // 천장·천장 띠처럼 높이 2.9m 위에만 있는 것(
 const mirrors = [];
 const wallMirrors = [];
 // 모형을 다시 내보내도 브라우저가 옛 파일을 쓰지 않게 주소에 버전(내보낼 때마다 숫자를 올림)
-const GLB_VER = '20261113i';
+const GLB_VER = '20261113j';
 new GLTFLoader().load('shop.glb?v=' + GLB_VER, (g) => {
   scene.add(g.scene);
   scene.updateMatrixWorld(true);
@@ -202,8 +202,9 @@ addEventListener('resize', () => {
 });
 // AR 단추: 모형 주소는 웹 모형과 같은 버전(GLB_VER)으로 — 휴대폰이 옛 파일을 쓰지 않게
 const arv = document.getElementById('arv');
-arv.setAttribute('ios-src', new URL('shop.usdz?v=' + GLB_VER, location.href).href);
-arv.setAttribute('src', new URL('shop.glb?v=' + GLB_VER, location.href).href);
+// AR은 천장 없는 모형(shop_ar.*): 바닥에 작게 놓고 내려다볼 때 천장이 안을 가리지 않게(11-13)
+arv.setAttribute('ios-src', new URL('shop_ar.usdz?v=' + GLB_VER, location.href).href);
+arv.setAttribute('src', new URL('shop_ar.glb?v=' + GLB_VER, location.href).href);
 document.getElementById('ar').onclick = () => {
   const msg = document.getElementById('msg');
   if (!customElements.get('model-viewer')) { msg.textContent = 'AR 기능을 아직 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요.'; return; }
