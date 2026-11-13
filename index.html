@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>루카루카 매장 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1a18; color: #f2efe8; font-family: -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; overflow: hidden; }
+  #view { position: fixed; inset: 0; }
+  #bar { position: fixed; left: 12px; right: 12px; top: 12px; display: flex; flex-wrap: wrap; gap: 6px; z-index: 2; }
+  #bar button { border: 1px solid #6b6455; background: rgba(30,28,25,.82); color: #f2efe8; padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  #bar button.on { background: #c9a35b; color: #1b1a18; border-color: #c9a35b; }
+  #msg { position: fixed; left: 12px; bottom: 12px; font-size: 13px; opacity: .85; z-index: 2; background: rgba(30,28,25,.7); padding: 6px 10px; border-radius: 6px; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<div id="view"></div>
+<div id="bar">
+  <button data-v="entry">입구</button>
+  <button data-v="window">창가 쇼케이스</button>
+  <button data-v="main">메인장·카운터</button>
+  <button data-v="back">검안실·조립실 벽</button>
+  <button data-v="exam">검안실 안</button>
+  <button data-v="top">위에서 보기</button>
+  <button id="ceil">천장 숨기기</button>
+  <button id="ar">AR로 보기</button>
+</div>
+<!-- AR(11-13 5단계): 구글 model-viewer가 휴대폰에 맞는 AR을 엶 — 아이폰은 Quick Look(shop.usdz), 안드로이드는 Scene Viewer·WebXR(shop.glb).
+     화면에는 안 보이게 두고(모형을 두 번 받지 않게 loading=lazy) 단추로만 엶. 모형 크기는 휴대폰에서 손가락으로 줄이고 키울 수 있음(ar-scale auto) -->
+<model-viewer id="arv" style="display:none" loading="lazy" ar ar-modes="quick-look scene-viewer webxr" ar-scale="auto"
+  alt="루카루카 안경원 3D 매장"></model-viewer>
+<script type="module" src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+<div id="msg">불러오는 중…</div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Reflector } from 'three/addons/objects/Reflector.js';
+
+// 블렌더 좌표(mm, x 동쪽, y 북쪽, z 위) → three(m, x, z, -y). 블렌더 렌더 구도(render_inside.py)와 같은 자리를 쓴다.
+const B = (x, y, z) => new THREE.Vector3(x / 1000, z / 1000, -y / 1000);
+const VIEWS = {
+  entry:  { eye: B(-243, 5237, 1386), at: B(1754, 5244, 1282) },
+  window: { eye: B(4659, 3648, 1433), at: B(4438, 1661, 1399) },
+  main:   { eye: B(4200, 1500, 1600), at: B(6340, 3000, 700) },
+  back:   { eye: B(3300, 2300, 1650), at: B(3300, 4470, 1700) },
+  exam:   { eye: B(3700, 4650, 1500), at: B(5005, 5600, 1000) },
+  top:    { eye: B(4000, 3000, 11000), at: B(4000, 3100, 0) },
+};
+
+const el = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+// 벽·천장·가구·바닥은 블렌더에서 조명을 구워 넣은 그림(렌더와 같은 색 변환이 이미 들어감) → 웹에서 색 변환을 또 하지 않음(11-13)
+renderer.toneMapping = THREE.NoToneMapping;
+el.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a2824);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+// 아래 빛들은 굽지 않은 것(진열 안경·화분 등)만 비춤
+scene.add(new THREE.HemisphereLight(0xfff3df, 0x6d655a, 0.6));
+// 천장 매입등 자리 쯤에 따뜻한 빛 몇 개(블렌더의 매입등 23개를 다 옮기지 않고 고르게 대신함)
+for (const [x, y] of [[1400, 1400], [3200, 1400], [5200, 1400], [7000, 1400], [1400, 3200], [3200, 3200], [5200, 3200], [7000, 3200], [1000, 5300], [3600, 5300], [6500, 5200]]) {
+  const p = new THREE.PointLight(0xffe2bd, 2.0, 7, 2);
+  p.position.copy(B(x, y, 3000));
+  scene.add(p);
+}
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.05, 200);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+function go(key) {
+  const v = VIEWS[key];
+  camera.position.copy(v.eye);
+  controls.target.copy(v.at);
+  controls.update();
+  document.querySelectorAll('#bar button[data-v]').forEach(b => b.classList.toggle('on', b.dataset.v === key));
+}
+
+// 바닥 테라조: 블렌더의 계산 무늬는 glb로 안 옮겨짐 → 60cm 타일 한 장 그림(바탕 + 밝은·어두운 조각 + 줄눈)을 만들어 깔기
+function terrazzo() {
+  const s = 512, c = document.createElement('canvas'); c.width = c.height = s;
+  const g = c.getContext('2d');
+  g.fillStyle = '#a69a8c'; g.fillRect(0, 0, s, s);
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  for (let i = 0; i < 1400; i++) {
+    const r = rnd(1.5, i % 9 === 0 ? 14 : 6), x = rnd(0, s), y = rnd(0, s);
+    const t = Math.random();
+    g.fillStyle = t < 0.55 ? `rgb(${rnd(205, 235)|0},${rnd(198, 226)|0},${rnd(186, 214)|0})` : t < 0.85 ? `rgb(${rnd(120, 150)|0},${rnd(112, 140)|0},${rnd(102, 128)|0})` : `rgb(${rnd(60, 85)|0},${rnd(56, 78)|0},${rnd(50, 70)|0})`;
+    g.beginPath();
+    const n = 5 + (Math.random() * 3 | 0);
+    for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2, rr = r * rnd(0.6, 1.2); g[k ? 'lineTo' : 'moveTo'](x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+    g.fill();
+  }
+  g.strokeStyle = '#6f665b'; g.lineWidth = 3; g.strokeRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+  return tex;
+}
+
+const high = [];   // 천장·천장 띠처럼 높이 2.9m 위에만 있는 것(천장 숨기기)
+const mirrors = [];
+const wallMirrors = [];
+// 모형을 다시 내보내도 브라우저가 옛 파일을 쓰지 않게 주소에 버전(내보낼 때마다 숫자를 올림)
+const GLB_VER = '20261113i';
+new GLTFLoader().load('shop.glb?v=' + GLB_VER, (g) => {
+  scene.add(g.scene);
+  scene.updateMatrixWorld(true);
+  g.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    const box = new THREE.Box3().setFromObject(o);
+    if (box.min.y > 2.9) high.push(o);
+    const m = o.material;
+    if (!m) return;
+    // 블렌더에서 조명을 구워 넣은 재질(baked_*): 그림에 이미 렌더와 같은 색 변환이 들어 있음 → 웹에서 또 바꾸지 않음
+    if (m.name.startsWith('baked_')) { m.toneMapped = false; m.envMapIntensity = 0; m.needsUpdate = true; }
+    if (m.name === 'm_floor') {
+      // 바닥 좌표(m)를 0.6m 타일 단위 UV로
+      const p = o.geometry.attributes.position, uv = new Float32Array(p.count * 2), v = new THREE.Vector3();
+      for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); uv[i * 2] = v.x / 0.6; uv[i * 2 + 1] = v.z / 0.6; }
+      o.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      m.map = terrazzo(); m.color.set(0xffffff); m.roughness = 0.35; m.needsUpdate = true;
+    }
+    if (m.name === 'm_fluted' && !m.userData.fluted) {
+      // 오픈테이블 몸통 세로 홈: 블렌더에선 재질 굴곡(웨이브 범프)이라 glb로 안 옮겨짐 → 면을 따라 가로로 3cm마다 법선을 흔들어 세로 홈처럼
+      m.userData.fluted = true;
+      m.onBeforeCompile = (sh) => {
+        sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vFlW;\nvarying vec3 vFlN;')
+          .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvFlW = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvFlN = normalize(mat3(modelMatrix) * objectNormal);');
+        sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vFlW;\nvarying vec3 vFlN;')
+          .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+          if (abs(vFlN.y) < 0.5) {
+            vec3 tW = normalize(cross(vec3(0.0, 1.0, 0.0), vFlN));
+            float ph = dot(vFlW, tW) / 0.03 * 6.2831853;
+            vec3 tV = normalize((viewMatrix * vec4(tW, 0.0)).xyz);
+            normal = normalize(normal + tV * 0.7 * cos(ph));
+          }`);
+      };
+      // 같은 설정의 다른 재질 셰이더를 재사용하지 않게 고유 이름표
+      m.customProgramCacheKey = () => 'fluted-v1';
+      m.needsUpdate = true;
+    }
+    // 창 유리 반투명은 이제 블렌더 내보내기 단계(export_glb.py)에서 glb에 담김
+    if (m.name === 'm_wall_mirror') wallMirrors.push(o);
+    else if (m.name === 'm_mirror') mirrors.push(m);
+    if (m.transparent) m.depthWrite = false;
+  });
+  // 거울: 매장 가운데 눈높이에서 주변을 한 번 찍어 반사 그림으로(거울마다 정확한 반사는 아니지만 까맣지 않게)
+  const rt = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType });
+  const cube = new THREE.CubeCamera(0.05, 50, rt);
+  cube.position.copy(B(4000, 2800, 1500));
+  scene.add(cube);
+  // 벽 전신 거울: 매장 가운데 한 번 찍은 반사 그림은 거울 자리에 따라 방향이 틀어져 까맣게 나옴(11-13 창가 남동 거울) →
+  // 그 자리에서 보이는 장면을 그대로 비추는 평면 거울(Reflector)로 바꿈. 화면에 보이는 거울만 계산함
+  const center = B(4000, 2800, 0);
+  wallMirrors.forEach((o) => {
+    const bb = new THREE.Box3().setFromObject(o), size = bb.getSize(new THREE.Vector3()), c = bb.getCenter(new THREE.Vector3());
+    const thinX = size.x < size.z;
+    const w = thinX ? size.z : size.x, h = size.y;
+    const rf = new Reflector(new THREE.PlaneGeometry(w, h), { textureWidth: 768, textureHeight: Math.round(768 * h / w), color: 0xd0d0d0 });
+    const n = thinX ? new THREE.Vector3(Math.sign(center.x - c.x) || 1, 0, 0) : new THREE.Vector3(0, 0, Math.sign(center.z - c.z) || 1);
+    rf.position.copy(c).addScaledVector(n, (thinX ? size.x : size.z) / 2 + 0.002);
+    rf.lookAt(rf.position.clone().add(n));
+    scene.add(rf);
+    o.visible = false;
+  });
+  // 큰 구운 그림이 다 풀리기 전에 찍으면 거울이 까맣게 됨(11-13) → 몇 번 다시 찍음
+  const snap = () => { mirrors.forEach(m => m.visible = false); cube.update(renderer, scene); mirrors.forEach(m => m.visible = true); };
+  snap(); [800, 2500, 6000].forEach(t => setTimeout(snap, t));
+  mirrors.forEach(m => { m.envMap = rt.texture; m.envMapIntensity = 1.0; m.metalness = 1; m.roughness = 0.02; m.color.set(0xf2f2f2); m.needsUpdate = true; });
+  document.getElementById('msg').textContent = '끌어서 돌리기 · 휠/두 손가락으로 확대 · 오른쪽 끌기로 옮기기';
+  go('entry');
+}, (e) => {
+  if (e.total) document.getElementById('msg').textContent = `불러오는 중… ${Math.round(e.loaded / e.total * 100)}%`;
+}, (err) => { document.getElementById('msg').textContent = '모형을 못 불러왔어요: ' + err.message; });
+
+document.querySelectorAll('#bar button[data-v]').forEach(b => b.onclick = () => go(b.dataset.v));
+const ceilBtn = document.getElementById('ceil');
+ceilBtn.onclick = () => {
+  const hide = !ceilBtn.classList.contains('on');
+  ceilBtn.classList.toggle('on', hide);
+  ceilBtn.textContent = hide ? '천장 보이기' : '천장 숨기기';
+  high.forEach(o => o.visible = !hide);
+};
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+// AR 단추: 모형 주소는 웹 모형과 같은 버전(GLB_VER)으로 — 휴대폰이 옛 파일을 쓰지 않게
+const arv = document.getElementById('arv');
+arv.setAttribute('ios-src', new URL('shop.usdz?v=' + GLB_VER, location.href).href);
+arv.setAttribute('src', new URL('shop.glb?v=' + GLB_VER, location.href).href);
+document.getElementById('ar').onclick = () => {
+  const msg = document.getElementById('msg');
+  if (!customElements.get('model-viewer')) { msg.textContent = 'AR 기능을 아직 불러오는 중이에요. 잠시 뒤 다시 눌러 주세요.'; return; }
+  if (!arv.canActivateAR) { msg.textContent = '이 기기에서는 AR을 열 수 없어요. 아이폰 사파리나 안드로이드 크롬에서 눌러 주세요.'; return; }
+  arv.activateAR();
+};
+window.__shop = { scene, camera, controls, go, high, THREE, renderer, arv };
+// 빛 번짐(블룸): 매입등·띠 조명·조명 갓처럼 아주 밝은 곳만 살짝 번지게(실제 사진처럼). 주소에 ?bloom=0이면 끔
+const useBloom = new URLSearchParams(location.search).get('bloom') !== '0';
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.25, 0.4, 3.0);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+addEventListener('resize', () => composer.setSize(innerWidth, innerHeight));
+window.__shop.bloom = bloom;
+renderer.setAnimationLoop(() => { controls.update(); if (useBloom) composer.render(); else renderer.render(scene, camera); });
+</script>
+</body>
+</html>
