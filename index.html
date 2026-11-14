@@ -11,6 +11,8 @@
   #bar button { border: 1px solid #6b6455; background: rgba(30,28,25,.82); color: #f2efe8; padding: 8px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
   #bar button.on { background: #c9a35b; color: #1b1a18; border-color: #c9a35b; }
   #msg { position: fixed; left: 12px; bottom: 12px; font-size: 13px; opacity: .85; z-index: 2; background: rgba(30,28,25,.7); padding: 6px 10px; border-radius: 6px; }
+  #joy { position: fixed; left: 24px; bottom: 56px; width: 130px; height: 130px; border-radius: 50%; background: rgba(30,28,25,.45); border: 2px solid rgba(201,163,91,.7); z-index: 3; display: none; touch-action: none; }
+  #joy i { position: absolute; left: 45px; top: 45px; width: 40px; height: 40px; border-radius: 50%; background: rgba(201,163,91,.85); }
 </style>
 <script type="importmap">
 { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
@@ -26,6 +28,7 @@
   <button data-v="back">검안실·조립실 벽</button>
   <button data-v="exam">검안실 안</button>
   <button data-v="top">위에서 보기</button>
+  <button id="walk">걸어서 들어가기</button>
   <button id="ceil">천장 숨기기</button>
   <button id="ar">AR로 보기</button>
 </div>
@@ -34,6 +37,7 @@
 <model-viewer id="arv" style="display:none" loading="lazy" ar ar-modes="quick-look scene-viewer webxr" ar-scale="auto"
   alt="루카루카 안경원 3D 매장"></model-viewer>
 <script type="module" src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+<div id="joy"><i></i></div>
 <div id="msg">불러오는 중…</div>
 <script type="module">
 import * as THREE from 'three';
@@ -85,12 +89,102 @@ for (const [x, y] of [[1400, 1400], [3200, 1400], [5200, 1400], [7000, 1400], [1
   scene.add(p);
 }
 
-const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.05, 200);
+// 11-14 깜빡임(z-싸움) 줄이기: 둘러볼 때는 가까운 면 0.3m·먼 면 120m(깊이 정밀도 약 6배), 걸을 때만 0.05m
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.3, 120);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.addEventListener('change', () => { dirty = true; });
 
+// ── 걸어서 들어가기(11-14 대장님: 안을 걸어 다니며 360도로 보고 싶음) ──
+// 컴퓨터: W·A·S·D(또는 화살표)로 걷고 Shift로 빠르게, 마우스를 끌어 둘러보기. 휴대폰: 왼쪽 아래 조이스틱으로 걷고 화면을 쓸어 둘러보기.
+// 벽·가구·유리는 지나가지 못함(허리·가슴 높이 두 줄 광선으로 앞을 재서 막고, 막히면 벽을 따라 미끄러짐). 눈높이 1.6m, 바닥 평평(턱·계단 없음).
+const EYE = 1.6, WALK_V = 1.4, RUN_V = 3.2, RADIUS = 0.3;
+let walk = false, yaw = 0, pitch = 0, lastT = performance.now();
+const keys = {}, joy = { x: 0, y: 0 };
+const ray = new THREE.Raycaster();
+const walkBtn = document.getElementById('walk'), joyEl = document.getElementById('joy');
+function blocked(pos, dx, dz) {
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return false;
+  const dir = new THREE.Vector3(dx / len, 0, dz / len);
+  for (const h of [0.45, 1.2]) {
+    ray.set(new THREE.Vector3(pos.x, h, pos.z), dir);
+    ray.far = RADIUS + len;
+    if (ray.intersectObject(scene, true).some(i => i.object.isMesh)) return true;
+  }
+  return false;
+}
+function walkStep(dt) {
+  let moved = false;
+  const f = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0) + (-joy.y);
+  const r = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0) + joy.x;
+  if (f || r) {
+    const v = (keys.ShiftLeft || keys.ShiftRight ? RUN_V : WALK_V) * dt;
+    const n = Math.max(1, Math.hypot(f, r));
+    let dx = (-Math.sin(yaw) * f + Math.cos(yaw) * r) / n * v;
+    let dz = (-Math.cos(yaw) * f - Math.sin(yaw) * r) / n * v;
+    const p = camera.position;
+    if (!blocked(p, dx, dz)) { p.x += dx; p.z += dz; moved = true; }
+    else if (dx && !blocked(p, dx, 0)) { p.x += dx; moved = true; }
+    else if (dz && !blocked(p, 0, dz)) { p.z += dz; moved = true; }
+  }
+  camera.position.y = EYE;
+  camera.rotation.set(pitch, yaw, 0, 'YXZ');
+  return moved;
+}
+function setWalk(on) {
+  walk = on;
+  walkBtn.classList.toggle('on', on);
+  walkBtn.textContent = on ? '둘러보기로 돌아가기' : '걸어서 들어가기';
+  controls.enabled = !on;
+  camera.fov = on ? 72 : 60; camera.near = on ? 0.05 : 0.3; camera.updateProjectionMatrix();
+  joyEl.style.display = on && MOBILE ? 'block' : 'none';
+  if (on) {
+    // 시작: 창가 시점 자리(매장 안쪽 서 있는 자리)에서 남쪽 창 쪽을 봄. 천장은 보이게
+    const v = VIEWS.window, d = v.at.clone().sub(v.eye);
+    camera.position.set(v.eye.x, EYE, v.eye.z);
+    yaw = Math.atan2(-d.x, -d.z); pitch = 0;
+    high.forEach(o => o.visible = true); ceilBtn.classList.remove('on'); ceilBtn.textContent = '천장 숨기기';
+    document.querySelectorAll('#bar button[data-v]').forEach(b => b.classList.remove('on'));
+    document.getElementById('msg').textContent = MOBILE ? '왼쪽 아래 동그라미로 걷기 · 화면을 쓸어서 둘러보기' : 'W·A·S·D로 걷기(Shift 빠르게) · 마우스를 끌어서 둘러보기';
+  } else {
+    const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+    controls.target.copy(camera.position).addScaledVector(dir, 2); controls.update();
+    document.getElementById('msg').textContent = '끌어서 돌리기 · 휠/두 손가락으로 확대 · 오른쪽 끌기로 옮기기';
+  }
+  redrawFor(500);
+}
+walkBtn.onclick = () => setWalk(!walk);
+addEventListener('keydown', (e) => { if (walk) { keys[e.code] = true; if (e.code.startsWith('Arrow')) e.preventDefault(); } });
+addEventListener('keyup', (e) => { keys[e.code] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+// 둘러보기(끌기): 화면을 잡아 끄는 방향으로 세상이 따라오게(길찾기 앱 방식)
+const looks = new Map();
+renderer.domElement.addEventListener('pointerdown', (e) => { if (walk) { looks.set(e.pointerId, [e.clientX, e.clientY]); renderer.domElement.setPointerCapture(e.pointerId); } });
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!walk || !looks.has(e.pointerId)) return;
+  const [x, y] = looks.get(e.pointerId);
+  yaw += (e.clientX - x) * 0.004; pitch = Math.max(-1.2, Math.min(1.2, pitch + (e.clientY - y) * 0.004));
+  looks.set(e.pointerId, [e.clientX, e.clientY]); dirty = true;
+});
+const endLook = (e) => looks.delete(e.pointerId);
+renderer.domElement.addEventListener('pointerup', endLook); renderer.domElement.addEventListener('pointercancel', endLook);
+// 조이스틱(휴대폰)
+{
+  const knob = joyEl.querySelector('i'); let pid = null;
+  const set = (e) => {
+    const b = joyEl.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+    let dx = (e.clientX - cx) / 50, dy = (e.clientY - cy) / 50; const l = Math.hypot(dx, dy); if (l > 1) { dx /= l; dy /= l; }
+    joy.x = dx; joy.y = dy; knob.style.transform = `translate(${dx * 40}px, ${dy * 40}px)`;
+  };
+  joyEl.addEventListener('pointerdown', (e) => { pid = e.pointerId; joyEl.setPointerCapture(pid); set(e); });
+  joyEl.addEventListener('pointermove', (e) => { if (e.pointerId === pid) set(e); });
+  const end = (e) => { if (e.pointerId !== pid) return; pid = null; joy.x = joy.y = 0; knob.style.transform = ''; };
+  joyEl.addEventListener('pointerup', end); joyEl.addEventListener('pointercancel', end);
+}
+
 function go(key) {
+  if (walk) setWalk(false);
   const v = VIEWS[key];
   camera.position.copy(v.eye);
   controls.target.copy(v.at);
@@ -123,7 +217,7 @@ const high = [];   // 천장·천장 띠처럼 높이 2.9m 위에만 있는 것(
 const mirrors = [];
 const wallMirrors = [];
 // 모형을 다시 내보내도 브라우저가 옛 파일을 쓰지 않게 주소에 버전(내보낼 때마다 숫자를 올림)
-const GLB_VER = '20261114g';
+const GLB_VER = '20261114h';
 // 점검용: 주소에 ?glb=이름.glb 를 주면 다른 모형 파일로 시험(이 컴퓨터 미리보기에서 전후 비교용)
 const _glb = new URLSearchParams(location.search).get('glb');
 // 휴대폰은 그림을 2048로 줄인 파일(그림 메모리 약 4분의 1), 컴퓨터는 4096
@@ -226,7 +320,7 @@ document.getElementById('ar').onclick = () => {
   if (!arv.canActivateAR) { msg.textContent = '이 기기에서는 AR을 열 수 없어요. 아이폰 사파리나 안드로이드 크롬에서 눌러 주세요.'; return; }
   arv.activateAR();
 };
-window.__shop = { scene, camera, controls, go, high, THREE, renderer, arv };
+window.__shop = { scene, camera, controls, go, high, THREE, renderer, arv, setWalk, blocked, keys, joy };
 // 빛 번짐(블룸): 매입등·띠 조명·조명 갓처럼 아주 밝은 곳만 살짝 번지게(실제 사진처럼). 주소에 ?bloom=0이면 끔
 const _bl = new URLSearchParams(location.search).get('bloom');
 const useBloom = MOBILE ? _bl === '1' : _bl !== '0';
@@ -239,7 +333,8 @@ addEventListener('resize', () => composer.setSize(innerWidth, innerHeight));
 window.__shop.bloom = bloom;
 // 움직일 때만 다시 그림(가만히 있을 때 휴대폰이 계속 계산해 뜨거워지지 않게): 손가락·시점 단추·창 크기·천장 단추·거울 다시 찍기 뒤
 renderer.setAnimationLoop(() => {
-  const moved = controls.update();
+  const now = performance.now(), dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  const moved = walk ? walkStep(dt) : controls.update();
   // 휴대폰: 움직이는 동안은 거울 반사를 새로 계산하지 않고(지난 그림), 멈추면 한 번 새로 그림 — 거울 하나가 장면을 한 번 더 그려
   // 거울이 여럿 보이면 그리기가 1,000회를 넘음(11-14 점검)
   if (MOBILE) { if (moved) { window.__mirrorPause = true; wasMoving = true; } else if (wasMoving) { window.__mirrorPause = false; wasMoving = false; dirty = true; } }
