@@ -59,7 +59,13 @@ const VIEWS = {
 
 const el = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// 휴대폰(손가락 화면)은 가볍게(11-13 대장님 갤럭시에서 버벅임): 화면 선명도 1.5배까지, 거울 반사 그림 작게, 빛 번짐 끔
+const MOBILE = matchMedia('(pointer: coarse)').matches;
+let dirty = true, wasMoving = false, redrawUntil = performance.now() + 3000;
+function redrawFor(ms) { dirty = true; redrawUntil = Math.max(redrawUntil, performance.now() + ms); }
+addEventListener('resize', () => redrawFor(300));
+document.addEventListener('click', () => redrawFor(500));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, MOBILE ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 // 벽·천장·가구·바닥은 블렌더에서 조명을 구워 넣은 그림(렌더와 같은 색 변환이 이미 들어감) → 웹에서 색 변환을 또 하지 않음(11-13)
@@ -82,6 +88,7 @@ for (const [x, y] of [[1400, 1400], [3200, 1400], [5200, 1400], [7000, 1400], [1
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.05, 200);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+controls.addEventListener('change', () => { dirty = true; });
 
 function go(key) {
   const v = VIEWS[key];
@@ -116,8 +123,12 @@ const high = [];   // 천장·천장 띠처럼 높이 2.9m 위에만 있는 것(
 const mirrors = [];
 const wallMirrors = [];
 // 모형을 다시 내보내도 브라우저가 옛 파일을 쓰지 않게 주소에 버전(내보낼 때마다 숫자를 올림)
-const GLB_VER = '20261113j';
-new GLTFLoader().load('shop.glb?v=' + GLB_VER, (g) => {
+const GLB_VER = '20261114e';
+// 점검용: 주소에 ?glb=이름.glb 를 주면 다른 모형 파일로 시험(이 컴퓨터 미리보기에서 전후 비교용)
+const _glb = new URLSearchParams(location.search).get('glb');
+// 휴대폰은 그림을 2048로 줄인 파일(그림 메모리 약 4분의 1), 컴퓨터는 4096
+const GLB_FILE = /^[\w.-]+\.glb$/.test(_glb || '') ? _glb : (MOBILE ? 'shop_m.glb' : 'shop.glb');
+new GLTFLoader().load(GLB_FILE + '?v=' + GLB_VER, (g) => {
   scene.add(g.scene);
   scene.updateMatrixWorld(true);
   g.scene.traverse((o) => {
@@ -167,11 +178,15 @@ new GLTFLoader().load('shop.glb?v=' + GLB_VER, (g) => {
   // 벽 전신 거울: 매장 가운데 한 번 찍은 반사 그림은 거울 자리에 따라 방향이 틀어져 까맣게 나옴(11-13 창가 남동 거울) →
   // 그 자리에서 보이는 장면을 그대로 비추는 평면 거울(Reflector)로 바꿈. 화면에 보이는 거울만 계산함
   const center = B(4000, 2800, 0);
+  // 거울끼리 서로 비추면 반사 계산이 끝없이 겹침(창가 시점 한 화면에 그리기 13만 번·삼각형 2,340만 개, 11-13) →
+  // 거울 하나를 계산하는 동안 다른 거울은 새로 계산하지 않고 지난 그림을 씀
+  const guard = (rf) => { const f = rf.onBeforeRender; rf.onBeforeRender = function (...a) { if (window.__reflecting || window.__mirrorPause) return; window.__reflecting = true; try { f.apply(this, a); } finally { window.__reflecting = false; } }; };
   wallMirrors.forEach((o) => {
     const bb = new THREE.Box3().setFromObject(o), size = bb.getSize(new THREE.Vector3()), c = bb.getCenter(new THREE.Vector3());
     const thinX = size.x < size.z;
     const w = thinX ? size.z : size.x, h = size.y;
-    const rf = new Reflector(new THREE.PlaneGeometry(w, h), { textureWidth: 768, textureHeight: Math.round(768 * h / w), color: 0xd0d0d0 });
+    const rf = new Reflector(new THREE.PlaneGeometry(w, h), { textureWidth: MOBILE ? 384 : 768, textureHeight: Math.round((MOBILE ? 384 : 768) * h / w), color: 0xd0d0d0 });
+    guard(rf);
     const n = thinX ? new THREE.Vector3(Math.sign(center.x - c.x) || 1, 0, 0) : new THREE.Vector3(0, 0, Math.sign(center.z - c.z) || 1);
     rf.position.copy(c).addScaledVector(n, (thinX ? size.x : size.z) / 2 + 0.002);
     rf.lookAt(rf.position.clone().add(n));
@@ -179,7 +194,7 @@ new GLTFLoader().load('shop.glb?v=' + GLB_VER, (g) => {
     o.visible = false;
   });
   // 큰 구운 그림이 다 풀리기 전에 찍으면 거울이 까맣게 됨(11-13) → 몇 번 다시 찍음
-  const snap = () => { mirrors.forEach(m => m.visible = false); cube.update(renderer, scene); mirrors.forEach(m => m.visible = true); };
+  const snap = () => { mirrors.forEach(m => m.visible = false); window.__reflecting = true; cube.update(renderer, scene); window.__reflecting = false; mirrors.forEach(m => m.visible = true); redrawFor(1000); };
   snap(); [800, 2500, 6000].forEach(t => setTimeout(snap, t));
   mirrors.forEach(m => { m.envMap = rt.texture; m.envMapIntensity = 1.0; m.metalness = 1; m.roughness = 0.02; m.color.set(0xf2f2f2); m.needsUpdate = true; });
   document.getElementById('msg').textContent = '끌어서 돌리기 · 휠/두 손가락으로 확대 · 오른쪽 끌기로 옮기기';
@@ -213,7 +228,8 @@ document.getElementById('ar').onclick = () => {
 };
 window.__shop = { scene, camera, controls, go, high, THREE, renderer, arv };
 // 빛 번짐(블룸): 매입등·띠 조명·조명 갓처럼 아주 밝은 곳만 살짝 번지게(실제 사진처럼). 주소에 ?bloom=0이면 끔
-const useBloom = new URLSearchParams(location.search).get('bloom') !== '0';
+const _bl = new URLSearchParams(location.search).get('bloom');
+const useBloom = MOBILE ? _bl === '1' : _bl !== '0';
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.25, 0.4, 3.0);
@@ -221,7 +237,16 @@ composer.addPass(bloom);
 composer.addPass(new OutputPass());
 addEventListener('resize', () => composer.setSize(innerWidth, innerHeight));
 window.__shop.bloom = bloom;
-renderer.setAnimationLoop(() => { controls.update(); if (useBloom) composer.render(); else renderer.render(scene, camera); });
+// 움직일 때만 다시 그림(가만히 있을 때 휴대폰이 계속 계산해 뜨거워지지 않게): 손가락·시점 단추·창 크기·천장 단추·거울 다시 찍기 뒤
+renderer.setAnimationLoop(() => {
+  const moved = controls.update();
+  // 휴대폰: 움직이는 동안은 거울 반사를 새로 계산하지 않고(지난 그림), 멈추면 한 번 새로 그림 — 거울 하나가 장면을 한 번 더 그려
+  // 거울이 여럿 보이면 그리기가 1,000회를 넘음(11-14 점검)
+  if (MOBILE) { if (moved) { window.__mirrorPause = true; wasMoving = true; } else if (wasMoving) { window.__mirrorPause = false; wasMoving = false; dirty = true; } }
+  if (!moved && !dirty && performance.now() > redrawUntil) return;
+  dirty = false;
+  if (useBloom) composer.render(); else renderer.render(scene, camera);
+});
 </script>
 </body>
 </html>
